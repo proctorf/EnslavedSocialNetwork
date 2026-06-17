@@ -1,0 +1,353 @@
+---
+title: "Enslaved Marriage Network Public"
+output: html_document
+date: "2026-06-16"
+---
+
+```{r setup, include=FALSE}
+# Load required libraries
+# tidyverse covers data manipulation (dplyr, stringr, readr, tidyr, purrr, lubridate)
+library(tidyverse)
+
+# Network analysis and visualization
+library(igraph)      # core network analysis
+library(tidygraph)   # tidy framework for network data
+library(ggraph)      # network visualization
+library(graphlayouts) # additional network layout algorithms
+```
+
+```{r}
+# Load the public dataset from the working directory
+# This file serves as the basis for all subsequent files in this repository
+PublicDF <- read_csv("PublicDF.csv")
+```
+
+```{r build-edges-undirected}
+# Build an undirected edge list from PublicDF
+# Edges represent social connections documented in marriage applications:
+# - Bride to Groom
+# - Witnesses to Bride, Groom, or both depending on the For column
+
+# Step 1: Preprocessing
+# Temporarily prefix Groom with "aG" to ensure correct alphabetical sorting
+# within each wedding group (Bride sorts before Groom, Groom before Witnesses)
+PublicDF$Role <- ifelse(PublicDF$Role == "G", "aG", PublicDF$Role)
+
+# Create a single grouping key from Volumen and Expediente
+PublicDF$CitationKey <- paste(PublicDF$Volumen, PublicDF$Expediente, sep = ".")
+
+# Sort by CitationKey and Role
+PublicDF <- PublicDF[order(PublicDF$CitationKey, PublicDF$Role), ]
+
+# Step 2: Initialize edge list
+edges_undirected <- data.frame(
+  Source = character(),
+  Target = character(),
+  stringsAsFactors = FALSE
+)
+
+# Step 3: Iterate over each wedding group
+for (cit in unique(PublicDF$CitationKey)) {
+  group <- PublicDF[PublicDF$CitationKey == cit, ]
+  
+  # Get IDs for each role
+  id_B <- group$ID[group$Role == "B"]
+  id_G <- group$ID[group$Role == "aG"]
+  w_rows <- group[grepl("^W", group$Role), ]
+  
+  # a) Edge between Bride and Groom
+  for (g in id_G) {
+    for (b in id_B) {
+      pair <- sort(c(g, b))
+      edges_undirected <- rbind(edges_undirected, data.frame(
+        Source = pair[1],
+        Target = pair[2],
+        stringsAsFactors = FALSE
+      ))
+    }
+  }
+  
+  # b) Edges for Witnesses based on For column
+  for (i in seq_len(nrow(w_rows))) {
+    w_id  <- w_rows$ID[i]
+    w_for <- w_rows$For[i]
+    
+    if (w_for == "Both") {
+      for (b in id_B) {
+        pair <- sort(c(w_id, b))
+        edges_undirected <- rbind(edges_undirected, data.frame(
+          Source = pair[1],
+          Target = pair[2],
+          stringsAsFactors = FALSE
+        ))
+      }
+      for (g in id_G) {
+        pair <- sort(c(w_id, g))
+        edges_undirected <- rbind(edges_undirected, data.frame(
+          Source = pair[1],
+          Target = pair[2],
+          stringsAsFactors = FALSE
+        ))
+      }
+    } else if (w_for == "Bride") {
+      for (b in id_B) {
+        pair <- sort(c(w_id, b))
+        edges_undirected <- rbind(edges_undirected, data.frame(
+          Source = pair[1],
+          Target = pair[2],
+          stringsAsFactors = FALSE
+        ))
+      }
+    } else if (w_for == "Groom") {
+      for (g in id_G) {
+        pair <- sort(c(w_id, g))
+        edges_undirected <- rbind(edges_undirected, data.frame(
+          Source = pair[1],
+          Target = pair[2],
+          stringsAsFactors = FALSE
+        ))
+      }
+    }
+  }
+}
+
+# Step 4: Restore Role column to original values
+PublicDF$Role <- ifelse(PublicDF$Role == "aG", "G", PublicDF$Role)
+
+# Step 5: Remove temporary CitationKey column
+PublicDF$CitationKey <- NULL
+
+# Step 6: Write to file
+#write_csv(edges_undirected, "edges_undirected.csv")
+```
+
+```{r}
+edges_original <- read_csv("/Users/fproc/Library/CloudStorage/GoogleDrive-proctorf@denison.edu/My Drive/My Documents/work/Research Folder/Mexico Mapping Research/ArcGIS Mexico City/MC Social Networks/edges_undirected.csv")
+```
+
+```{r}
+edges_original <- edges_original %>%
+  mutate(Source = as.character(Source),
+         Target = as.character(Target))
+```
+
+```{r}
+# Standardize column names for comparison
+# The original has Source, Target, Citation, Type
+# We need to compare just on Source-Target pairs
+
+# Find edges in new file not in original
+new_not_in_original <- anti_join(
+  edges_undirected,
+  edges_original,
+  by = c("Source", "Target")
+)
+
+# Find edges in original not in new file
+original_not_in_new <- anti_join(
+  edges_original,
+  edges_undirected,
+  by = c("Source", "Target")
+)
+
+#print(new_not_in_original)
+print(original_not_in_new)
+```
+
+```{r}
+edges_undirected %>% 
+  group_by(Source, Target) %>% 
+  filter(n() > 1) %>%
+  arrange(Source, Target)
+  
+edges_undirected <- edges_undirected %>% distinct()
+
+nrow(edges_undirected)
+```
+
+```{r}
+# Check if N/A entries in For are generating edges
+edges_undirected %>%
+  filter(Source %in% PublicDF$ID[PublicDF$For == "N/A"] | 
+         Target %in% PublicDF$ID[PublicDF$For == "N/A"])
+
+# Count witnesses with N/A in For column
+PublicDF %>%
+  filter(grepl("^W", Role), For == "N/A") %>%
+  nrow()
+```
+
+
+```{r diagnose-citations}
+# Check for any unexpected duplicate CitationKeys
+PublicDF %>%
+  count(Volumen, Expediente) %>%
+  arrange(desc(n))
+
+# Also check how many unique CitationKeys the loop is iterating over
+PublicDF %>%
+  mutate(CitationKey = paste(Volumen, Expediente, sep = ".")) %>%
+  summarise(unique_citations = n_distinct(CitationKey))
+```
+```{r}
+# How many unique citations were in the original file
+edges_original %>%
+  summarise(unique_citations = n_distinct(Citation))
+```
+```{r examine-missing-citations}
+# Reload original edges file
+edges_original <- read_csv("/Users/fproc/Library/CloudStorage/GoogleDrive-proctorf@denison.edu/My Drive/My Documents/work/Research Folder/Mexico Mapping Research/ArcGIS Mexico City/MC Social Networks/edges_undirected.csv")
+
+# Get citation keys from PublicDF
+publicdf_citations <- PublicDF %>%
+  mutate(CitationKey = paste(Volumen, Expediente, sep = ".")) %>%
+  distinct(CitationKey) %>%
+  pull(CitationKey)
+
+# Get citations from original edges file
+original_citations <- edges_original %>%
+  distinct(Citation) %>%
+  pull(Citation)
+
+# Find citations in original not in PublicDF
+missing_from_original <- setdiff(
+  as.character(original_citations),
+  publicdf_citations
+)
+
+# Find citations in PublicDF not in original
+missing_from_new <- setdiff(
+  publicdf_citations,
+  as.character(original_citations)
+)
+
+print(missing_from_original)
+print(missing_from_new)
+```
+
+```{r check-citation-columns}
+# Look at a sample of Volumen and Expediente values
+PublicDF %>%
+  distinct(Volumen, Expediente) %>%
+  arrange(Volumen, Expediente) %>%
+  head(20)
+
+# Check for any unexpected values
+PublicDF %>%
+  summarise(
+    Volumen_min  = min(Volumen, na.rm = TRUE),
+    Volumen_max  = max(Volumen, na.rm = TRUE),
+    Exp_min      = min(Expediente, na.rm = TRUE),
+    Exp_max      = max(Expediente, na.rm = TRUE),
+    Volumen_NA   = sum(is.na(Volumen)),
+    Exp_NA       = sum(is.na(Expediente))
+  )
+```
+```{r export-citation-check}
+# Export distinct Volumen/Expediente combinations with row counts for verification
+PublicDF %>%
+  count(Volumen, Expediente) %>%
+  arrange(Volumen, Expediente) %>%
+  write_csv("citation_check.csv")
+```
+
+
+```{r check-duplicate-dates}
+# Find Volumen/Expediente pairs with more than one distinct date
+PublicDF %>%
+  group_by(Volumen, Expediente) %>%
+  summarise(
+    date_count    = n_distinct(Date),
+    dates         = paste(unique(Date), collapse = " | "),
+    .groups = "drop"
+  ) %>%
+  filter(date_count > 1) %>%
+  arrange(Volumen, Expediente)
+```
+```{r check-duplicate-weddingids}
+# Find Volumen/Expediente pairs with more than one distinct WeddingID
+PublicDF %>%
+  group_by(Volumen, Expediente) %>%
+  summarise(
+    wedding_count = n_distinct(WeddingID),
+    weddings      = paste(unique(WeddingID), collapse = " | "),
+    .groups = "drop"
+  ) %>%
+  filter(wedding_count > 1) %>%
+  arrange(Volumen, Expediente)
+```
+
+```{r check-15a}
+# Find the 15a expediente entry
+PublicDF %>%
+  filter(grepl("a", Expediente)) %>%
+  select(WeddingID, Volumen, Expediente) %>%
+  distinct()
+```
+
+```{r load-and-subset}
+# Load source data
+data <- read_csv("/Users/fproc/Library/CloudStorage/GoogleDrive-proctorf@denison.edu/My Drive/My Documents/work/Research Folder/Mexico Mapping Research/ArcGIS Mexico City/MC Social Networks/Marriage_DF_06_05_2025.csv")
+```
+
+```{r}
+
+# Create working subset
+publicDf <- data %>% 
+  select(`Ref#`, Citation, ModDate, firstname, lastname, ID, sex, Role, Race, Status, Master_Reg, MasterID, Age, `For?`) %>%
+  rename(`Wedding Number` = `Ref#`)
+```
+
+```{r build-publicdf}
+PublicDF <- publicDf %>%
+  select(1,2,3,6,4,5,8,14,9,10,7,13,11,12) %>%
+  rename(Date = ModDate, EnslaverName = Master_Reg, EnslaverID = MasterID,
+         Sex = sex, FirstName = firstname, Surname = lastname,
+         WeddingID = `Wedding Number`, For = `For?`) %>%
+  separate(Citation, into = c("Volumen", "Expediente"), sep = "\\.") %>%
+  mutate(
+    WeddingID    = paste0("W", str_pad(WeddingID, 4, pad = "0")),
+    ID           = paste0("P", str_pad(ID, 4, pad = "0")),
+    EnslaverID   = ifelse(is.na(EnslaverID), "N/A",
+                          paste0("E", str_pad(EnslaverID, 4, pad = "0"))),
+    EnslaverName = ifelse(is.na(EnslaverName), "N/A", EnslaverName),
+    Volumen      = str_pad(Volumen, 3, pad = "0"),
+    Expediente   = case_when(
+      grepl("a$", Expediente) ~ paste0(str_pad(gsub("a$", "", Expediente), 3, pad = "0"), "a"),
+      TRUE                    ~ str_pad(Expediente, 3, pad = "0")
+    ),
+    Race = case_when(
+      Race == "Mz"    ~ "Mestizo",
+      Race == "Negro" ~ "Black",
+      Race == "Ind"   ~ "Indio/a",
+      Race == "Esp"   ~ "Spaniard",
+      Race == "Mozam" ~ "Mozambique",
+      Race == "Xoxa"  ~ "Xhosa",
+      Race == "TNova" ~ "TerraNova",
+      TRUE            ~ Race
+    )
+  )
+```
+
+```{r verify-citations}
+PublicDF %>%
+  group_by(Volumen, Expediente) %>%
+  summarise(
+    wedding_count = n_distinct(WeddingID),
+    weddings      = paste(unique(WeddingID), collapse = " | "),
+    .groups = "drop"
+  ) %>%
+  filter(wedding_count > 1)
+```
+
+```{r find-ambiguous-citations}
+PublicDF %>%
+  group_by(Volumen, Expediente) %>%
+  summarise(
+    wedding_count = n_distinct(WeddingID),
+    weddings      = paste(unique(WeddingID), collapse = " | "),
+    .groups = "drop"
+  ) %>%
+  filter(wedding_count > 1) %>%
+  write_csv("ambiguous_citations.csv")
+```
