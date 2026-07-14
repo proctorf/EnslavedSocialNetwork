@@ -25,7 +25,7 @@ A deduplicated list of the 210 slaveholding households associated with two or mo
 An undirected edge list representing social connections between participants as documented in the marriage applications. In an undirected graph, edges have no directionality — a connection between Person A and Person B is the same as a connection between Person B and Person A. Each row contains a Source and Target column identifying a pair of individuals connected through their shared participation in a wedding — either as bride and groom, or as witnesses testifying on behalf of one or both parties. This file contains 2,039 edges.
 
 ### `edges_w_households.csv`
-n undirected edge list that extends `edges_undirected.csv` by adding structural ties created through shared enslavement in the same household. In an undirected graph, edges have no directionality — a connection between Person A and Person B is the same as a connection between Person B and Person A. Individuals who do not appear connected in `edges_undirected.csv` may be connected here if they were enslaved by the same person or household. This file contains 2,574 edges (2,039 participant connections + 535 household connections) and was used to generate the network visualizations discussed in the article.
+An undirected edge list that extends `edges_undirected.csv` by adding structural ties created through shared enslavement in the same household. In an undirected graph, edges have no directionality — a connection between Person A and Person B is the same as a connection between Person B and Person A. Individuals who do not appear connected in `edges_undirected.csv` may be connected here if they were enslaved by the same person or household. This file contains 2,574 edges (2,039 participant connections + 535 household connections) and was used to generate the network visualizations discussed in the article.
 
 ### `EnslavedNetworks.Rmd`
 The R Markdown file used to construct all five CSV files from `PublicDF.csv`. It documents all data preparation and curatorial decisions made in building the dataset.
@@ -108,4 +108,4 @@ Citation information will be added upon publication.
 
 ## Acknowledgments
 
-The README file and portions of the data construction code in `EnslavedNetworks.Rmd` were drafted with the assistance of Claude (Anthropic).
+This README file was drafted with the assistance of Claude.ai. Claude.ai also served as a coding assistant in crafting the code in `EnslavedNetworks.Rmd`.
