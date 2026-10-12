@@ -19,103 +19,64 @@ library(graphlayouts) # additional network layout algorithms
 ```{r}
 # Load the public dataset from the working directory
 # This file serves as the basis for all subsequent files in this repository
-PublicDF <- read_csv("PublicDF.csv")
+  PublicDF <- read_csv("PublicDF.csv",
+                       col_types = cols(.default = "c", Volumen = "i", Expediente = "i"))
 ```
+
 ```{r build-edges-undirected}
 # Build an undirected edge list from PublicDF
 # Edges represent social connections documented in marriage applications:
 # - Bride to Groom
 # - Witnesses to Bride, Groom, or both depending on the For column
+#   (Role = "B", "G", "W1", "W2", ...; For = "Bride", "Groom", "Both", or "N/A")
 
-# Step 1: Preprocessing
-# Temporarily prefix Groom with "aG" to ensure correct alphabetical sorting
-# within each wedding group (Bride sorts before Groom, Groom before Witnesses)
-PublicDF$Role <- ifelse(PublicDF$Role == "G", "aG", PublicDF$Role)
+# Step 1: Sort within each wedding: Groom, Bride, then witnesses numerically (W1, W2, ... W10)
+PublicDF <- PublicDF %>%
+  mutate(RoleOrder = case_when(
+    Role == "G" ~ 0,
+    Role == "B" ~ 1,
+    grepl("^W", Role) ~ 1 + as.numeric(gsub("\\D", "", Role)),
+    TRUE ~ NA_real_
+  )) %>%
+  arrange(WeddingID, RoleOrder)
 
-# Sort by WeddingID and Role
-PublicDF <- PublicDF[order(PublicDF$WeddingID, PublicDF$Role), ]
+# Any role the ranking didn't recognize? (should return nothing)
+PublicDF %>% filter(is.na(RoleOrder)) %>% distinct(Role)
 
-# Step 2: Initialize edge list
-edges_undirected <- data.frame(
-  Source = character(),
-  Target = character(),
-  stringsAsFactors = FALSE
-)
-
-# Step 3: Iterate over each wedding group using WeddingID
-for (wed in unique(PublicDF$WeddingID)) {
-  group <- PublicDF[PublicDF$WeddingID == wed, ]
-  
-  # Get IDs for each role
-  id_B   <- group$ID[group$Role == "B"]
-  id_G   <- group$ID[group$Role == "aG"]
-  w_rows <- group[grepl("^W", group$Role), ]
-  
-  # a) Edge between Bride and Groom
-  for (g in id_G) {
-    for (b in id_B) {
-      pair <- sort(c(g, b))
-      edges_undirected <- rbind(edges_undirected, data.frame(
-        Source = pair[1],
-        Target = pair[2],
-        stringsAsFactors = FALSE
-      ))
-    }
-  }
-  
-  # b) Edges for Witnesses based on For column
-  for (i in seq_len(nrow(w_rows))) {
-    w_id  <- w_rows$ID[i]
-    w_for <- w_rows$For[i]
-    
-    if (is.na(w_for) | w_for == "N/A") next
-    
-    if (w_for == "Both") {
-      for (b in id_B) {
-        pair <- sort(c(w_id, b))
-        edges_undirected <- rbind(edges_undirected, data.frame(
-          Source = pair[1],
-          Target = pair[2],
-          stringsAsFactors = FALSE
-        ))
-      }
-      for (g in id_G) {
-        pair <- sort(c(w_id, g))
-        edges_undirected <- rbind(edges_undirected, data.frame(
-          Source = pair[1],
-          Target = pair[2],
-          stringsAsFactors = FALSE
-        ))
-      }
-    } else if (w_for == "Bride") {
-      for (b in id_B) {
-        pair <- sort(c(w_id, b))
-        edges_undirected <- rbind(edges_undirected, data.frame(
-          Source = pair[1],
-          Target = pair[2],
-          stringsAsFactors = FALSE
-        ))
-      }
-    } else if (w_for == "Groom") {
-      for (g in id_G) {
-        pair <- sort(c(w_id, g))
-        edges_undirected <- rbind(edges_undirected, data.frame(
-          Source = pair[1],
-          Target = pair[2],
-          stringsAsFactors = FALSE
-        ))
-      }
-    }
-  }
+# Step 2: Helper to build sorted Source/Target pairs for one wedding
+make_pair <- function(a, b, wed) {
+  if (length(a) == 0 || length(b) == 0) return(NULL)
+  expand.grid(a = a, b = b, stringsAsFactors = FALSE) %>%
+    transmute(Source = pmin(a, b), Target = pmax(a, b), WeddingID = wed)
 }
 
-# Step 4: Restore Role column to original values
-PublicDF$Role <- ifelse(PublicDF$Role == "aG", "G", PublicDF$Role)
+# Step 3: Build edges wedding by wedding
+edges_undirected <- map_dfr(unique(PublicDF$WeddingID), function(wed) {
+  grp  <- PublicDF[PublicDF$WeddingID == wed, ]
+  id_B <- grp$ID[grp$Role == "B"]
+  id_G <- grp$ID[grp$Role == "G"]
+  wit  <- grp[grepl("^W", grp$Role) & !is.na(grp$For) & grp$For != "N/A", ]
 
-# Step 5: Verify edge count
+  bind_rows(
+    # a) Bride to Groom
+    make_pair(id_G, id_B, wed),
+    # b) Witnesses, based on the For column
+    map_dfr(seq_len(nrow(wit)), function(i) {
+      w <- wit$ID[i]
+      switch(wit$For[i],
+        "Both"  = bind_rows(make_pair(w, id_B, wed), make_pair(w, id_G, wed)),
+        "Bride" = make_pair(w, id_B, wed),
+        "Groom" = make_pair(w, id_G, wed),
+        NULL)
+    })
+  )
+}) %>%
+  filter(Source != Target)   # drop self-loops
+
+# Step 4: Verify edge count - should return 2,141
 nrow(edges_undirected)
 
-# Step 6: Write to file
+# Step 5: Write to file
 write_csv(edges_undirected, "edges_undirected.csv")
 ```
 
@@ -141,9 +102,12 @@ edges_household <- valid_enslavers %>%
          Target = ID)
 
 # Step 3: Combine with undirected edges
-edges_w_households <- rbind(edges_undirected, edges_household)
+edges_w_households <- bind_rows(
+  edges_undirected %>% select(Source, Target),
+  edges_household
+)
 
-# Step 4: Verify row count
+# Step 4: Verify row count - should return 2,704
 nrow(edges_w_households)
 
 # Step 5: Write to file
@@ -157,17 +121,13 @@ write_csv(edges_w_households, "edges_w_households.csv")
 
 nodes_participants <- PublicDF %>%
   group_by(ID) %>%
-  arrange(ID, desc(Surname != "")) %>%
+  arrange(ID, is.na(Surname)) %>%      # non-NA surnames first
   summarise(
     FirstName = first(FirstName),
     Surname   = first(Surname),
     .groups   = "drop"
   ) %>%
-  mutate(
-    Name = ifelse(Surname == "" | is.na(Surname),
-                  FirstName,
-                  paste(FirstName, Surname))
-  ) %>%
+  mutate(Name = if_else(is.na(Surname), FirstName, paste(FirstName, Surname))) %>%
   select(ID, Name)
 
 # Verify
@@ -195,11 +155,16 @@ nodes_enslavers <- PublicDF %>%
   ) %>%
   select(EnslaverID, EnslaverName)
 
-# Verify - should return 210
+# Verify - should return 215
 nrow(nodes_enslavers)
 head(nodes_enslavers)
 
 # Write to file
 write_csv(nodes_enslavers, "nodes_enslavers.csv")
 ```
+
+```{r}
+# Every edge endpoint should exist as a node
+all_nodes <- c(nodes_participants$ID, nodes_enslavers$EnslaverID)
+setdiff(unique(c(edges_w_households$Source, edges_w_households$Target)), all_nodes)
 ```
